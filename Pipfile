@@ -5,6 +5,10 @@ name = "pypi"
 
 [packages]
 mcp = "*"
+chromadb = "*"
+spacy = "*"
+textstat = "*"
+language-tool-python = "*"
 
 [dev-packages]
 pytest = "*"

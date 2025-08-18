@@ -35,11 +35,56 @@ except ImportError:
     LANGUAGE_TOOL_AVAILABLE = False
     language_tool = None
 
+# ChromaDB integration
+try:
+    import chromadb
+    from chromadb.config import Settings
+    CHROMADB_AVAILABLE = True
+    # ChromaDB client will be initialized on first use
+    chroma_client = None
+except ImportError:
+    CHROMADB_AVAILABLE = False
+    chroma_client = None
+
 # Initialize the MCP server
 mcp = FastMCP("Book MCP Server")
 
 # Default book directory - can be overridden by environment variable
 BOOK_DIRECTORY = os.getenv("BOOK_DIRECTORY", ".")
+
+# ChromaDB configuration
+CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
+RETRIEVAL_K = int(os.getenv("RETRIEVAL_K", "4"))
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "mistral")
+
+def get_chroma_client():
+    """Initialize and return ChromaDB client."""
+    global chroma_client
+    if not CHROMADB_AVAILABLE:
+        return None
+
+    if chroma_client is None:
+        try:
+            chroma_client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
+        except Exception as e:
+            print(f"Failed to initialize ChromaDB client: {e}")
+            return None
+
+    return chroma_client
+
+def get_chroma_collection(collection_name: str = "novel_content"):
+    """Get or create a ChromaDB collection."""
+    client = get_chroma_client()
+    if client is None:
+        return None
+
+    try:
+        # Try to get existing collection first
+        collection = client.get_collection(collection_name)
+        return collection
+    except Exception:
+        # Collection doesn't exist, return None
+        return None
 
 @mcp.tool()
 def list_chapters() -> List[Dict[str, Any]]:
@@ -91,6 +136,108 @@ def list_chapters() -> List[Dict[str, Any]]:
     # Sort by filename to maintain some order
     result.sort(key=lambda x: x["filename"])
     return result
+
+@mcp.tool()
+def find_isolated_characters() -> Dict[str, Any]:
+    """
+    Quickly identify characters that appear infrequently and may need more development.
+    Returns concise results focused on isolated characters only.
+
+    Returns:
+        Dictionary with isolated characters and development suggestions
+    """
+    if not SPACY_AVAILABLE:
+        return {"error": "spaCy library not available. Install with: pipenv install spacy && python -m spacy download en_core_web_sm"}
+
+    global nlp
+    if nlp is None:
+        try:
+            nlp = spacy.load("en_core_web_sm")
+        except OSError:
+            return {"error": "spaCy English model not found. Run: python -m spacy download en_core_web_sm"}
+
+    book_path = Path(BOOK_DIRECTORY)
+    if not book_path.exists():
+        raise FileNotFoundError(f"Book directory not found: {BOOK_DIRECTORY}")
+
+    characters = {}
+
+    for file_path in book_path.glob("**/*.md"):
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+                # Get chapter title
+                chapter_title = "Untitled"
+                lines = content.splitlines()
+                for line in lines:
+                    if line.strip().startswith('#'):
+                        chapter_title = line.strip().lstrip('#').strip()
+                        break
+
+                # Process with spaCy
+                doc = nlp(content)
+
+                # Find all person entities
+                for ent in doc.ents:
+                    if ent.label_ == "PERSON" and len(ent.text.strip()) > 1:
+                        name = ent.text.strip()
+                        if name.lower() not in ['i', 'me', 'you', 'he', 'she', 'they', 'we', 'us']:
+                            if name not in characters:
+                                characters[name] = {"mentions": 0, "chapters": set()}
+                            characters[name]["mentions"] += 1
+                            characters[name]["chapters"].add(chapter_title)
+
+        except (UnicodeDecodeError, PermissionError):
+            continue
+
+    # Convert sets to lists and find isolated characters
+    isolated = []
+    underused = []
+
+    for name, data in characters.items():
+        chapter_count = len(data["chapters"])
+        mention_count = data["mentions"]
+
+        if mention_count == 1:
+            isolated.append({
+                "name": name,
+                "mentions": mention_count,
+                "chapters": chapter_count,
+                "issue": "Appears only once"
+            })
+        elif mention_count <= 3:
+            underused.append({
+                "name": name,
+                "mentions": mention_count,
+                "chapters": chapter_count,
+                "issue": "Very few mentions"
+            })
+
+    # Sort by mention count
+    isolated.sort(key=lambda x: x["mentions"])
+    underused.sort(key=lambda x: x["mentions"])
+
+    return {
+        "summary": {
+            "total_characters": len(characters),
+            "isolated_characters": len(isolated),
+            "underused_characters": len(underused),
+            "characters_needing_development": len(isolated) + len(underused)
+        },
+        "isolated_characters": isolated[:15],  # Characters appearing only once
+        "underused_characters": underused[:10],  # Characters with 2-3 mentions
+        "recommendations": [
+            f"Consider developing {char['name']} - only {char['mentions']} mention(s)"
+            for char in (isolated + underused)[:8]
+        ],
+        "development_priorities": [
+            "Focus on isolated characters first - they may be unnecessary or need expansion",
+            "Consider combining similar minor characters",
+            "Give underused characters more scenes or remove them",
+            "Main characters should appear in multiple chapters"
+        ]
+    }
 
 @mcp.tool()
 def extract_all_characters() -> Dict[str, Any]:
@@ -192,17 +339,29 @@ def extract_all_characters() -> Dict[str, Any]:
             "secondary_characters": len(secondary_characters),
             "minor_characters": len(minor_characters)
         },
-        "character_analysis": {
-            "main_characters": dict(list(main_characters.items())[:10]),  # Top 10
-            "secondary_characters": secondary_characters,
-            "minor_characters": dict(list(minor_characters.items())[:20])  # First 20 minor
-        },
+        "main_characters": {name: {
+            "total_mentions": data["total_mentions"],
+            "chapters_count": len(data["chapters"]),
+            "first_appearance": data["first_appearance"]
+        } for name, data in list(main_characters.items())[:10]},
+        "secondary_characters": {name: {
+            "total_mentions": data["total_mentions"],
+            "chapters_count": len(data["chapters"])
+        } for name, data in list(secondary_characters.items())[:10]},
+        "isolated_characters": {name: {
+            "total_mentions": data["total_mentions"],
+            "chapters_count": len(data["chapters"]),
+            "reason": "Only appears once" if data["total_mentions"] == 1 else "Limited appearances"
+        } for name, data in list(minor_characters.items())[:15]},
         "insights": {
             "most_mentioned": list(sorted_characters.keys())[0] if sorted_characters else "None",
             "characters_in_multiple_chapters": sum(1 for char in characters.values() if len(char["chapters"]) > 1),
-            "single_chapter_characters": sum(1 for char in characters.values() if len(char["chapters"]) == 1)
-        },
-        "all_characters": sorted_characters
+            "isolated_character_count": len(minor_characters),
+            "development_suggestions": [
+                f"{name} - appears only {data['total_mentions']} time(s)"
+                for name, data in list(minor_characters.items())[:5]
+            ]
+        }
     }
 
 @mcp.tool()
@@ -232,7 +391,12 @@ def analyze_character_relationships() -> Dict[str, Any]:
     if "error" in characters_data:
         return characters_data
 
-    all_characters = list(characters_data["all_characters"].keys())
+    # Extract all character names from the different categories
+    all_characters = []
+    all_characters.extend(characters_data.get("main_characters", {}).keys())
+    all_characters.extend(characters_data.get("secondary_characters", {}).keys())
+    all_characters.extend(characters_data.get("isolated_characters", {}).keys())
+    all_characters = list(set(all_characters))  # Remove duplicates
     relationships = {}
     scene_cooccurrences = {}
 
@@ -308,29 +472,23 @@ def analyze_character_relationships() -> Dict[str, Any]:
             "moderate_relationships": len(moderate_relationships),
             "characters_analyzed": len(all_characters)
         },
-        "strong_relationships": {
-            f"{pair[0]} & {pair[1]}": {
+        "top_relationships": [
+            {
+                "characters": f"{pair[0]} & {pair[1]}",
                 "scenes_together": data["total_scenes"],
                 "chapters_together": len(data["chapters"]),
-                "relationship_strength": "Strong" if data["total_scenes"] > 10 else "Moderate",
-                "chapters": data["chapters"],
-                "example_scenes": data["scene_contexts"]
+                "strength": "Strong" if data["total_scenes"] > 10 else "Moderate"
             }
-            for pair, data in list(strong_relationships.items())[:10]
-        },
-        "moderate_relationships": {
-            f"{pair[0]} & {pair[1]}": {
-                "scenes_together": data["total_scenes"],
-                "chapters_together": len(data["chapters"]),
-                "chapters": data["chapters"]
-            }
-            for pair, data in list(moderate_relationships.items())[:10]
-        },
+            for pair, data in list(sorted_relationships.items())[:8]
+        ],
+        "isolated_characters": [
+            char for char in all_characters
+            if not any(char in pair for pair in relationships.keys())
+        ][:10],
         "insights": {
-            "most_connected_pairs": [f"{pair[0]} & {pair[1]}" for pair in list(sorted_relationships.keys())[:5]],
-            "isolated_characters": [char for char in all_characters
-                                  if not any(char in pair for pair in relationships.keys())],
-            "relationship_density": round(len(relationships) / (len(all_characters) * (len(all_characters) - 1) / 2) * 100, 2) if len(all_characters) > 1 else 0
+            "most_connected_pair": f"{list(sorted_relationships.keys())[0][0]} & {list(sorted_relationships.keys())[0][1]}" if sorted_relationships else "None",
+            "relationship_density": round(len(relationships) / (len(all_characters) * (len(all_characters) - 1) / 2) * 100, 2) if len(all_characters) > 1 else 0,
+            "characters_needing_relationships": len([char for char in all_characters if not any(char in pair for pair in relationships.keys())])
         }
     }
 
@@ -584,7 +742,7 @@ def comprehensive_grammar_check(chapter_path: str) -> Dict[str, Any]:
         return {"error": f"Error performing grammar check: {str(e)}"}
 
 @mcp.tool()
-def get_schema() -> Dict[str, Any]:
+def list_methods() -> Dict[str, Any]:
     """
     List all available methods/tools in the book MCP server with descriptions and usage examples.
 
@@ -681,6 +839,14 @@ def get_schema() -> Dict[str, Any]:
                     "example_use": "Who are all the characters in my book?"
                 },
                 {
+                    "name": "find_isolated_characters",
+                    "purpose": "Quickly identify characters that appear infrequently and may need more development",
+                    "usage": "Find characters with minimal appearances that might need expansion or removal",
+                    "requires": "spaCy library",
+                    "returns": "Isolated and underused characters with development suggestions",
+                    "example_use": "Which characters in my book need more development?"
+                },
+                {
                     "name": "analyze_character_relationships",
                     "purpose": "Discover which characters appear together in scenes",
                     "usage": "Understand character dynamics and story structure",
@@ -708,7 +874,65 @@ def get_schema() -> Dict[str, Any]:
                 }
             ]
         },
-        "editorial": {
+        "semantic_search": {
+            "description": "Vector-based semantic search using ChromaDB integration",
+            "methods": [
+                {
+                    "name": "connect_to_vector_db",
+                    "purpose": "Connect to ChromaDB and list available collections",
+                    "usage": "Check connection status and see what collections are available",
+                    "requires": "ChromaDB library and existing database",
+                    "returns": "Connection status and collection information",
+                    "example_use": "What collections are available in my vector database?"
+                },
+                {
+                    "name": "semantic_search",
+                    "purpose": "Search content using natural language queries and vector similarity",
+                    "usage": "Find content based on meaning rather than exact text matches",
+                    "requires": "ChromaDB library",
+                    "parameters": "query (str), collection_name (str), n_results (int)",
+                    "returns": "Semantically similar content with relevance scores",
+                    "example_use": "Find all content about character development"
+                },
+                {
+                    "name": "find_thematic_content",
+                    "purpose": "Discover content related to specific themes or concepts",
+                    "usage": "Explore thematic elements throughout your book",
+                    "requires": "ChromaDB library",
+                    "parameters": "theme (str), collection_name (str), n_results (int)",
+                    "returns": "Content related to the specified theme with strength scores",
+                    "example_use": "Find all content related to the theme of redemption"
+                },
+                {
+                    "name": "analyze_character_relationships_semantic",
+                    "purpose": "Use vector similarity to find character relationships beyond co-occurrence",
+                    "usage": "Discover deeper character connections and emotional relationships",
+                    "requires": "ChromaDB library",
+                    "parameters": "character_name (str), collection_name (str)",
+                    "returns": "Semantic analysis of character relationships and interactions",
+                    "example_use": "How does Sarah relate to other characters emotionally?"
+                },
+                {
+                    "name": "check_plot_consistency_semantic",
+                    "purpose": "Find potentially contradictory information about plot elements",
+                    "usage": "Ensure consistency in world-building, magic systems, timelines, etc.",
+                    "requires": "ChromaDB library",
+                    "parameters": "plot_element (str), collection_name (str)",
+                    "returns": "Analysis of plot element consistency across the book",
+                    "example_use": "Check consistency of the magic system throughout my book"
+                },
+                {
+                    "name": "hybrid_character_analysis",
+                    "purpose": "Combine semantic and exact search for comprehensive character analysis",
+                    "usage": "Get the most complete picture of character development",
+                    "requires": "ChromaDB library and spaCy",
+                    "parameters": "character_name (str), collection_name (str)",
+                    "returns": "Combined semantic, exact, and consistency analysis",
+                    "example_use": "Give me a complete analysis of my protagonist"
+                }
+            ]
+        },
+        "editorial_feedback": {
             "description": "Methods that provide actionable editorial feedback",
             "methods": [
                 {
@@ -734,6 +958,18 @@ def get_schema() -> Dict[str, Any]:
                     "parameters": "chapter_path (str) - path to chapter file",
                     "returns": "Paragraph analysis with showing/telling ratios and specific suggestions",
                     "example_use": "Is Chapter 4 too heavy on exposition?"
+                }
+            ]
+        },
+        "utility": {
+            "description": "Utility methods for server information",
+            "methods": [
+                {
+                    "name": "list_methods",
+                    "purpose": "Show all available methods (this method)",
+                    "usage": "Understand what tools are available",
+                    "returns": "Complete list of methods with descriptions and examples",
+                    "example_use": "What methods can I use?"
                 }
             ]
         }
@@ -787,10 +1023,29 @@ def get_schema() -> Dict[str, Any]:
             {
                 "workflow": "Character Development Check",
                 "steps": [
-                    "1. track_character_consistency('protagonist_name') - Check main character",
-                    "2. search_content('protagonist_name') - Find all mentions",
-                    "3. Review flagged inconsistencies",
-                    "4. Update character descriptions as needed"
+                    "1. hybrid_character_analysis('protagonist_name') - Complete character analysis",
+                    "2. analyze_character_relationships_semantic('protagonist_name') - Semantic relationships",
+                    "3. track_character_consistency('protagonist_name') - Check consistency",
+                    "4. Update character development based on insights"
+                ]
+            },
+            {
+                "workflow": "Thematic Analysis",
+                "steps": [
+                    "1. connect_to_vector_db() - Check ChromaDB connection",
+                    "2. find_thematic_content('love') - Explore love theme",
+                    "3. find_thematic_content('conflict') - Explore conflict theme",
+                    "4. semantic_search('character growth and development') - Find development arcs",
+                    "5. Strengthen weak thematic areas"
+                ]
+            },
+            {
+                "workflow": "Plot Consistency Check",
+                "steps": [
+                    "1. check_plot_consistency_semantic('magic system') - Check world-building",
+                    "2. check_plot_consistency_semantic('timeline') - Check chronology",
+                    "3. semantic_search('rules and limitations') - Find constraint mentions",
+                    "4. Fix any inconsistencies found"
                 ]
             },
             {
@@ -799,7 +1054,8 @@ def get_schema() -> Dict[str, Any]:
                     "1. get_book_stats() - Overall project status",
                     "2. get_chapter_length_distribution() - Check pacing",
                     "3. get_narrative_structure() - Analyze story flow",
-                    "4. Adjust structure based on insights"
+                    "4. semantic_search('climax and resolution') - Find story peaks",
+                    "5. Adjust structure based on insights"
                 ]
             }
         ]
@@ -1841,6 +2097,385 @@ def get_file_summary(file_path: str, max_lines: int = 10) -> Dict[str, Any]:
         "truncated": len(lines) > max_lines
     }
 
+@mcp.tool()
+def connect_to_vector_db() -> Dict[str, Any]:
+    """
+    Connect to the existing ChromaDB database and list available collections.
+
+    Returns:
+        Dictionary with connection status and available collections
+    """
+    if not CHROMADB_AVAILABLE:
+        return {"error": "ChromaDB library not available. Install with: pipenv install chromadb"}
+
+    client = get_chroma_client()
+    if client is None:
+        return {"error": f"Failed to connect to ChromaDB at {CHROMA_PERSIST_DIR}"}
+
+    try:
+        collections = client.list_collections()
+        collection_info = []
+
+        for collection in collections:
+            try:
+                count = collection.count()
+                collection_info.append({
+                    "name": collection.name,
+                    "document_count": count
+                })
+            except Exception as e:
+                collection_info.append({
+                    "name": collection.name,
+                    "document_count": f"Error: {str(e)}"
+                })
+
+        return {
+            "status": "connected",
+            "chroma_persist_dir": CHROMA_PERSIST_DIR,
+            "collections": collection_info,
+            "total_collections": len(collections)
+        }
+    except Exception as e:
+        return {"error": f"Error listing collections: {str(e)}"}
+
+@mcp.tool()
+def semantic_search(query: str, collection_name: str = "novel_content", n_results: int = 5) -> Dict[str, Any]:
+    """
+    Perform semantic search across your novel content using vector similarity.
+
+    Args:
+        query: The search query (natural language)
+        collection_name: Name of the ChromaDB collection to search (default: "novel_content")
+        n_results: Number of results to return (default: 5)
+
+    Returns:
+        Dictionary with search results and metadata
+    """
+    if not CHROMADB_AVAILABLE:
+        return {"error": "ChromaDB library not available. Install with: pipenv install chromadb"}
+
+    collection = get_chroma_collection(collection_name)
+    if collection is None:
+        return {"error": f"Collection '{collection_name}' not found. Use connect_to_vector_db() to see available collections."}
+
+    try:
+        results = collection.query(
+            query_texts=[query],
+            n_results=min(n_results, 20)  # Limit to reasonable number
+        )
+
+        if not results['documents'] or not results['documents'][0]:
+            return {
+                "query": query,
+                "collection": collection_name,
+                "results": [],
+                "message": "No results found for this query"
+            }
+
+        formatted_results = []
+        for i, (doc, metadata, distance) in enumerate(zip(
+            results['documents'][0],
+            results['metadatas'][0] if results['metadatas'][0] else [{}] * len(results['documents'][0]),
+            results['distances'][0] if results['distances'][0] else [0] * len(results['documents'][0])
+        )):
+            formatted_results.append({
+                "rank": i + 1,
+                "content": doc,
+                "metadata": metadata,
+                "similarity_score": round(1 - distance, 4) if distance is not None else "N/A",
+                "distance": round(distance, 4) if distance is not None else "N/A"
+            })
+
+        return {
+            "query": query,
+            "collection": collection_name,
+            "total_results": len(formatted_results),
+            "results": formatted_results
+        }
+    except Exception as e:
+        return {"error": f"Error performing semantic search: {str(e)}"}
+
+@mcp.tool()
+def find_thematic_content(theme: str, collection_name: str = "novel_content", n_results: int = 8) -> Dict[str, Any]:
+    """
+    Find all content related to a specific theme or concept using semantic search.
+
+    Args:
+        theme: The theme or concept to search for
+        collection_name: Name of the ChromaDB collection to search
+        n_results: Number of results to return
+
+    Returns:
+        Dictionary with thematically related content
+    """
+    if not CHROMADB_AVAILABLE:
+        return {"error": "ChromaDB library not available. Install with: pipenv install chromadb"}
+
+    # Enhance the theme query with related concepts
+    enhanced_query = f"theme of {theme}, concept of {theme}, {theme} in story, {theme} elements"
+
+    collection = get_chroma_collection(collection_name)
+    if collection is None:
+        return {"error": f"Collection '{collection_name}' not found. Use connect_to_vector_db() to see available collections."}
+
+    try:
+        results = collection.query(
+            query_texts=[enhanced_query],
+            n_results=n_results
+        )
+
+        if not results['documents'] or not results['documents'][0]:
+            return {
+                "theme": theme,
+                "collection": collection_name,
+                "thematic_content": [],
+                "message": f"No thematic content found for '{theme}'"
+            }
+
+        thematic_content = []
+        for i, (doc, metadata, distance) in enumerate(zip(
+            results['documents'][0],
+            results['metadatas'][0] if results['metadatas'][0] else [{}] * len(results['documents'][0]),
+            results['distances'][0] if results['distances'][0] else [0] * len(results['documents'][0])
+        )):
+            thematic_content.append({
+                "relevance_rank": i + 1,
+                "content": doc,
+                "metadata": metadata,
+                "thematic_strength": round(1 - distance, 4) if distance is not None else "N/A",
+                "content_preview": doc[:200] + "..." if len(doc) > 200 else doc
+            })
+
+        return {
+            "theme": theme,
+            "collection": collection_name,
+            "total_matches": len(thematic_content),
+            "thematic_content": thematic_content,
+            "analysis": {
+                "strongest_match": thematic_content[0]["thematic_strength"] if thematic_content else 0,
+                "theme_coverage": "High" if len(thematic_content) > 5 else "Medium" if len(thematic_content) > 2 else "Low"
+            }
+        }
+    except Exception as e:
+        return {"error": f"Error finding thematic content: {str(e)}"}
+
+@mcp.tool()
+def analyze_character_relationships_semantic(character_name: str, collection_name: str = "novel_content") -> Dict[str, Any]:
+    """
+    Use vector similarity to find character relationships and interactions beyond simple co-occurrence.
+
+    Args:
+        character_name: Name of the character to analyze
+        collection_name: Name of the ChromaDB collection to search
+
+    Returns:
+        Dictionary with semantic character relationship analysis
+    """
+    if not CHROMADB_AVAILABLE:
+        return {"error": "ChromaDB library not available. Install with: pipenv install chromadb"}
+
+    collection = get_chroma_collection(collection_name)
+    if collection is None:
+        return {"error": f"Collection '{collection_name}' not found. Use connect_to_vector_db() to see available collections."}
+
+    try:
+        # Search for character interactions and relationships
+        relationship_queries = [
+            f"{character_name} relationship with other characters",
+            f"{character_name} interactions and dialogue",
+            f"{character_name} emotional connections",
+            f"how {character_name} affects other characters"
+        ]
+
+        all_results = []
+        for query in relationship_queries:
+            results = collection.query(
+                query_texts=[query],
+                n_results=5
+            )
+
+            if results['documents'] and results['documents'][0]:
+                for doc, metadata, distance in zip(
+                    results['documents'][0],
+                    results['metadatas'][0] if results['metadatas'][0] else [{}] * len(results['documents'][0]),
+                    results['distances'][0] if results['distances'][0] else [0] * len(results['documents'][0])
+                ):
+                    all_results.append({
+                        "query_type": query,
+                        "content": doc,
+                        "metadata": metadata,
+                        "relevance": round(1 - distance, 4) if distance is not None else "N/A"
+                    })
+
+        # Remove duplicates and sort by relevance
+        unique_results = []
+        seen_content = set()
+        for result in all_results:
+            content_key = result["content"][:100]  # Use first 100 chars as key
+            if content_key not in seen_content:
+                seen_content.add(content_key)
+                unique_results.append(result)
+
+        unique_results.sort(key=lambda x: x["relevance"] if x["relevance"] != "N/A" else 0, reverse=True)
+
+        return {
+            "character": character_name,
+            "collection": collection_name,
+            "semantic_analysis": {
+                "total_relationship_contexts": len(unique_results),
+                "high_relevance_matches": len([r for r in unique_results if r["relevance"] != "N/A" and r["relevance"] > 0.7]),
+                "relationship_strength": "Strong" if len(unique_results) > 8 else "Moderate" if len(unique_results) > 4 else "Weak"
+            },
+            "relationship_contexts": unique_results[:10],  # Top 10 most relevant
+            "insights": [
+                f"Found {len(unique_results)} semantic contexts involving {character_name}",
+                f"Character appears in {'diverse' if len(set(r['query_type'] for r in unique_results)) > 2 else 'limited'} relationship scenarios",
+                "High semantic relevance suggests well-developed character relationships" if any(r["relevance"] != "N/A" and r["relevance"] > 0.8 for r in unique_results) else "Consider developing deeper character relationships"
+            ]
+        }
+    except Exception as e:
+        return {"error": f"Error analyzing character relationships: {str(e)}"}
+
+@mcp.tool()
+def check_plot_consistency_semantic(plot_element: str, collection_name: str = "novel_content") -> Dict[str, Any]:
+    """
+    Find potentially contradictory information about plot elements using semantic search.
+
+    Args:
+        plot_element: The plot element to check for consistency (e.g., "magic system", "timeline", "world rules")
+        collection_name: Name of the ChromaDB collection to search
+
+    Returns:
+        Dictionary with plot consistency analysis
+    """
+    if not CHROMADB_AVAILABLE:
+        return {"error": "ChromaDB library not available. Install with: pipenv install chromadb"}
+
+    collection = get_chroma_collection(collection_name)
+    if collection is None:
+        return {"error": f"Collection '{collection_name}' not found. Use connect_to_vector_db() to see available collections."}
+
+    try:
+        # Search for all mentions and descriptions of the plot element
+        consistency_queries = [
+            f"{plot_element} rules and mechanics",
+            f"how {plot_element} works in the story",
+            f"{plot_element} limitations and constraints",
+            f"{plot_element} changes and evolution"
+        ]
+
+        all_mentions = []
+        for query in consistency_queries:
+            results = collection.query(
+                query_texts=[query],
+                n_results=6
+            )
+
+            if results['documents'] and results['documents'][0]:
+                for doc, metadata, distance in zip(
+                    results['documents'][0],
+                    results['metadatas'][0] if results['metadatas'][0] else [{}] * len(results['documents'][0]),
+                    results['distances'][0] if results['distances'][0] else [0] * len(results['documents'][0])
+                ):
+                    all_mentions.append({
+                        "aspect": query,
+                        "content": doc,
+                        "metadata": metadata,
+                        "relevance": round(1 - distance, 4) if distance is not None else "N/A",
+                        "content_preview": doc[:150] + "..." if len(doc) > 150 else doc
+                    })
+
+        # Remove duplicates
+        unique_mentions = []
+        seen_content = set()
+        for mention in all_mentions:
+            content_key = mention["content"][:100]
+            if content_key not in seen_content:
+                seen_content.add(content_key)
+                unique_mentions.append(mention)
+
+        unique_mentions.sort(key=lambda x: x["relevance"] if x["relevance"] != "N/A" else 0, reverse=True)
+
+        # Analyze for potential inconsistencies (basic heuristic)
+        high_relevance = [m for m in unique_mentions if m["relevance"] != "N/A" and m["relevance"] > 0.6]
+
+        return {
+            "plot_element": plot_element,
+            "collection": collection_name,
+            "consistency_analysis": {
+                "total_mentions_found": len(unique_mentions),
+                "high_relevance_mentions": len(high_relevance),
+                "coverage": "Comprehensive" if len(unique_mentions) > 8 else "Moderate" if len(unique_mentions) > 4 else "Limited"
+            },
+            "plot_mentions": unique_mentions[:12],  # Top 12 most relevant
+            "consistency_recommendations": [
+                f"Found {len(unique_mentions)} references to {plot_element}",
+                "Review high-relevance mentions for potential contradictions",
+                "Consider creating a consistency guide for this plot element" if len(unique_mentions) > 6 else "Plot element may need more development",
+                "Use exact search tools to verify specific details mentioned in these contexts"
+            ]
+        }
+    except Exception as e:
+        return {"error": f"Error checking plot consistency: {str(e)}"}
+
+@mcp.tool()
+def hybrid_character_analysis(character_name: str, collection_name: str = "novel_content") -> Dict[str, Any]:
+    """
+    Combine semantic search with exact search for comprehensive character analysis.
+
+    Args:
+        character_name: Name of the character to analyze
+        collection_name: Name of the ChromaDB collection to search
+
+    Returns:
+        Dictionary with hybrid character analysis combining semantic and exact search
+    """
+    if not CHROMADB_AVAILABLE:
+        return {"error": "ChromaDB library not available. Install with: pipenv install chromadb"}
+
+    # Get semantic analysis
+    semantic_results = analyze_character_relationships_semantic(character_name, collection_name)
+    if "error" in semantic_results:
+        return semantic_results
+
+    # Get exact search results
+    exact_results = search_content(character_name, case_sensitive=False)
+
+    # Get character consistency analysis
+    consistency_results = track_character_consistency(character_name)
+
+    return {
+        "character": character_name,
+        "analysis_type": "hybrid_semantic_and_exact",
+        "semantic_insights": {
+            "relationship_contexts": len(semantic_results.get("relationship_contexts", [])),
+            "semantic_strength": semantic_results.get("semantic_analysis", {}).get("relationship_strength", "Unknown"),
+            "top_semantic_matches": semantic_results.get("relationship_contexts", [])[:3]
+        },
+        "exact_mentions": {
+            "total_mentions": len(exact_results),
+            "chapters_mentioned": len(set(result["filename"] for result in exact_results)),
+            "recent_mentions": exact_results[:5]  # First 5 mentions
+        },
+        "consistency_analysis": {
+            "total_appearances": consistency_results.get("summary", {}).get("total_chapters_appearing", 0) if "error" not in consistency_results else 0,
+            "consistency_issues": consistency_results.get("summary", {}).get("consistency_issues", 0) if "error" not in consistency_results else "Unknown",
+            "physical_descriptions": len(consistency_results.get("physical_descriptions", [])) if "error" not in consistency_results else 0
+        },
+        "comprehensive_insights": [
+            f"Character appears in {len(exact_results)} exact mentions across {len(set(result['filename'] for result in exact_results))} files",
+            f"Semantic analysis reveals {semantic_results.get('semantic_analysis', {}).get('relationship_strength', 'unknown')} relationship development",
+            f"Consistency check found {consistency_results.get('summary', {}).get('consistency_issues', 0) if 'error' not in consistency_results else 'unknown'} potential issues",
+            "Strong character development" if len(exact_results) > 10 and semantic_results.get('semantic_analysis', {}).get('relationship_strength') == 'Strong' else "Character may need more development"
+        ],
+        "recommendations": [
+            "Use semantic search to explore character themes and relationships",
+            "Use exact search to verify specific character details and dialogue",
+            "Review consistency analysis for any contradictory descriptions",
+            "Consider expanding character development if semantic strength is weak"
+        ]
+    }
+
 def main():
     """Main entry point for the MCP server."""
     # Set the book directory if provided via environment variable
@@ -1852,6 +2487,12 @@ def main():
     else:
         print(f"Using default book directory: {BOOK_DIRECTORY}")
         print("Set BOOK_DIRECTORY environment variable to specify a different directory")
+
+    # Print ChromaDB configuration
+    if CHROMADB_AVAILABLE:
+        print(f"ChromaDB integration enabled - Database path: {CHROMA_PERSIST_DIR}")
+    else:
+        print("ChromaDB integration disabled - install chromadb to enable semantic search")
 
     # Run the FastMCP server
     mcp.run()
