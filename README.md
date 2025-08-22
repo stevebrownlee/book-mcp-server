@@ -11,8 +11,8 @@ This MCP server provides comprehensive manuscript analysis and content access to
 
 ## Tool Categories
 
-### 1. Statistical Analysis Tools
-Tools that provide statistical insights about your book project.
+<details>
+<summary><strong>1. Statistical Analysis Tools</strong> - Tools that provide statistical insights about your book project</summary>
 
 #### [`list_chapters()`](server.py:89)
 **Purpose**: List all chapter files with enhanced metadata including titles and word counts.
@@ -96,10 +96,10 @@ Tools that provide statistical insights about your book project.
 
 **Usage Example**: "How is my story structured across chapters?"
 
----
+</details>
 
-### 2. Content Access Tools
-Tools for reading and searching specific content within your manuscript.
+<details>
+<summary><strong>2. Content Access Tools</strong> - Tools for reading and searching specific content within your manuscript</summary>
 
 #### [`list_markdown_files()`](server.py:1064)
 **Purpose**: List all markdown files in the book directory.
@@ -169,10 +169,10 @@ Tools for reading and searching specific content within your manuscript.
 
 **Usage Example**: "Give me a summary of Chapter 3"
 
----
+</details>
 
-### 3. Advanced NLP Analysis Tools
-AI-powered analysis using advanced Natural Language Processing libraries.
+<details>
+<summary><strong>3. Advanced NLP Analysis Tools</strong> - AI-powered analysis using advanced Natural Language Processing libraries</summary>
 
 #### [`extract_all_characters()`](server.py:242)
 **Purpose**: Automatically discover all character names using advanced NLP.
@@ -263,10 +263,10 @@ AI-powered analysis using advanced Natural Language Processing libraries.
 
 **Usage Example**: "What grammar errors are in Chapter 2?"
 
----
+</details>
 
-### 4. Semantic Search Tools (ChromaDB Integration)
-Vector-based semantic search using ChromaDB for meaning-based content discovery.
+<details>
+<summary><strong>4. Semantic Search Tools (ChromaDB Integration)</strong> - Vector-based semantic search using ChromaDB for meaning-based content discovery</summary>
 
 #### [`connect_to_vector_db()`](server.py:2100)
 **Purpose**: Connect to ChromaDB and list available collections.
@@ -386,10 +386,10 @@ Vector-based semantic search using ChromaDB for meaning-based content discovery.
 
 **Usage Example**: "Give me a complete analysis of my protagonist"
 
----
+</details>
 
-### 5. Editorial Feedback Tools
-Tools that provide actionable editorial feedback for improving your manuscript.
+<details>
+<summary><strong>5. Editorial Feedback Tools</strong> - Tools that provide actionable editorial feedback for improving your manuscript</summary>
 
 #### [`analyze_writing_issues(chapter_path)`](server.py:1174)
 **Purpose**: Identify specific writing problems in a chapter.
@@ -446,10 +446,10 @@ Tools that provide actionable editorial feedback for improving your manuscript.
 
 **Usage Example**: "Is Chapter 4 too heavy on exposition?"
 
----
+</details>
 
-### 6. Utility Tools
-General utility methods for server information and functionality.
+<details>
+<summary><strong>6. Utility Tools</strong> - General utility methods for server information and functionality</summary>
 
 #### [`list_methods()`](server.py:744)
 **Purpose**: Show all available methods with descriptions and usage examples.
@@ -465,7 +465,7 @@ General utility methods for server information and functionality.
 
 **Usage Example**: "What methods can I use?"
 
----
+</details>
 
 ## Configuration
 
