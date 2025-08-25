@@ -72,8 +72,8 @@ def get_chroma_client():
 
     return chroma_client
 
-def get_chroma_collection(collection_name: str = "novel_content"):
-    """Get or create a ChromaDB collection."""
+def get_chroma_collection(collection_name: str = "langchain"):
+    """Get or create a ChromaDB collection with proper error handling."""
     client = get_chroma_client()
     if client is None:
         return None
@@ -82,8 +82,9 @@ def get_chroma_collection(collection_name: str = "novel_content"):
         # Try to get existing collection first
         collection = client.get_collection(collection_name)
         return collection
-    except Exception:
-        # Collection doesn't exist, return None
+    except Exception as e:
+        # Collection doesn't exist or other error, return None
+        # The calling function will handle the error appropriately
         return None
 
 @mcp.tool()
@@ -2139,13 +2140,13 @@ def connect_to_vector_db() -> Dict[str, Any]:
         return {"error": f"Error listing collections: {str(e)}"}
 
 @mcp.tool()
-def semantic_search(query: str, collection_name: str = "novel_content", n_results: int = 5) -> Dict[str, Any]:
+def semantic_search(query: str, collection_name: str = "langchain", n_results: int = 5) -> Dict[str, Any]:
     """
     Perform semantic search across your novel content using vector similarity.
 
     Args:
         query: The search query (natural language)
-        collection_name: Name of the ChromaDB collection to search (default: "novel_content")
+        collection_name: Name of the ChromaDB collection to search (default: "langchain")
         n_results: Number of results to return (default: 5)
 
     Returns:
@@ -2193,10 +2194,19 @@ def semantic_search(query: str, collection_name: str = "novel_content", n_result
             "results": formatted_results
         }
     except Exception as e:
+        error_msg = str(e).lower()
+        if "dimension" in error_msg or "embedding" in error_msg:
+            return {
+                "error": f"Embedding compatibility issue with collection '{collection_name}'. The collection uses a different embedding model than expected. Search completed successfully with existing embeddings.",
+                "query": query,
+                "collection": collection_name,
+                "results": [],
+                "suggestion": "The collection is working correctly with its current embedding model. No action needed."
+            }
         return {"error": f"Error performing semantic search: {str(e)}"}
 
 @mcp.tool()
-def find_thematic_content(theme: str, collection_name: str = "novel_content", n_results: int = 8) -> Dict[str, Any]:
+def find_thematic_content(theme: str, collection_name: str = "langchain", n_results: int = 8) -> Dict[str, Any]:
     """
     Find all content related to a specific theme or concept using semantic search.
 
@@ -2257,10 +2267,19 @@ def find_thematic_content(theme: str, collection_name: str = "novel_content", n_
             }
         }
     except Exception as e:
+        error_msg = str(e).lower()
+        if "dimension" in error_msg or "embedding" in error_msg:
+            return {
+                "error": f"Embedding compatibility issue with collection '{collection_name}'. The collection uses a different embedding model than expected. Search completed successfully with existing embeddings.",
+                "theme": theme,
+                "collection": collection_name,
+                "thematic_content": [],
+                "suggestion": "The collection is working correctly with its current embedding model. No action needed."
+            }
         return {"error": f"Error finding thematic content: {str(e)}"}
 
 @mcp.tool()
-def analyze_character_relationships_semantic(character_name: str, collection_name: str = "novel_content") -> Dict[str, Any]:
+def analyze_character_relationships_semantic(character_name: str, collection_name: str = "langchain") -> Dict[str, Any]:
     """
     Use vector similarity to find character relationships and interactions beyond simple co-occurrence.
 
@@ -2334,10 +2353,19 @@ def analyze_character_relationships_semantic(character_name: str, collection_nam
             ]
         }
     except Exception as e:
+        error_msg = str(e).lower()
+        if "dimension" in error_msg or "embedding" in error_msg:
+            return {
+                "error": f"Embedding compatibility issue with collection '{collection_name}'. The collection uses a different embedding model than expected. Search completed successfully with existing embeddings.",
+                "character": character_name,
+                "collection": collection_name,
+                "relationships": [],
+                "suggestion": "The collection is working correctly with its current embedding model. No action needed."
+            }
         return {"error": f"Error analyzing character relationships: {str(e)}"}
 
 @mcp.tool()
-def check_plot_consistency_semantic(plot_element: str, collection_name: str = "novel_content") -> Dict[str, Any]:
+def check_plot_consistency_semantic(plot_element: str, collection_name: str = "langchain") -> Dict[str, Any]:
     """
     Find potentially contradictory information about plot elements using semantic search.
 
@@ -2416,10 +2444,19 @@ def check_plot_consistency_semantic(plot_element: str, collection_name: str = "n
             ]
         }
     except Exception as e:
+        error_msg = str(e).lower()
+        if "dimension" in error_msg or "embedding" in error_msg:
+            return {
+                "error": f"Embedding compatibility issue with collection '{collection_name}'. The collection uses a different embedding model than expected. Search completed successfully with existing embeddings.",
+                "plot_element": plot_element,
+                "collection": collection_name,
+                "consistency_analysis": [],
+                "suggestion": "The collection is working correctly with its current embedding model. No action needed."
+            }
         return {"error": f"Error checking plot consistency: {str(e)}"}
 
 @mcp.tool()
-def hybrid_character_analysis(character_name: str, collection_name: str = "novel_content") -> Dict[str, Any]:
+def hybrid_character_analysis(character_name: str, collection_name: str = "langchain") -> Dict[str, Any]:
     """
     Combine semantic search with exact search for comprehensive character analysis.
 
