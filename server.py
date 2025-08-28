@@ -523,7 +523,7 @@ def analyze_readability(chapter_path: str) -> Dict[str, Any]:
 
     try:
         # Calculate various readability metrics
-        flesch_kincaid = textstat.flesch_kincaid().grade(clean_content)
+        flesch_kincaid = textstat.flesch_kincaid_grade(clean_content)
         flesch_reading_ease = textstat.flesch_reading_ease(clean_content)
         gunning_fog = textstat.gunning_fog(clean_content)
         coleman_liau = textstat.coleman_liau_index(clean_content)
